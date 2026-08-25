@@ -255,21 +255,32 @@ class LEDStripController:
         except asyncio.QueueFull:
             pass
 
-    async def set_color_rgb(self, r: int, g: int, b: int, immediate: bool = False):
+    async def set_color_rgb(self, r: int, g: int, b: int, immediate: bool = False, raw: bool = False):
         """
         Set RGB Color (0-255 for each channel).
+        Performs RGB scaling according to self._brightness for 5V USB LED strips.
         Sends 9-byte format (7e 07 05 03 R G B 00 ef) and 8-byte format (7e 04 04 R G B 00 ef)
-        for 100% compatibility across MELK-OA10 firmware revisions.
+        for 100% compatibility across MELK-OA10 / Lotus / ELK-BLEDOM firmware revisions.
         """
         r = max(0, min(255, int(r)))
         g = max(0, min(255, int(g)))
         b = max(0, min(255, int(b)))
         
         self._last_rgb = (r, g, b)
+
+        # Apply software brightness scaling for 5V strips (unless raw is True)
+        if not raw:
+            scale = max(0.0, min(1.0, self._brightness / 100.0))
+            eff_r = max(0, min(255, int(round(r * scale))))
+            eff_g = max(0, min(255, int(round(g * scale))))
+            eff_b = max(0, min(255, int(round(b * scale))))
+        else:
+            eff_r, eff_g, eff_b = r, g, b
+
         # 9-byte primary MELK-OA10 color packet
-        packet1 = bytes([0x7E, 0x07, 0x05, 0x03, r, g, b, 0x00, 0xEF])
+        packet1 = bytes([0x7E, 0x07, 0x05, 0x03, eff_r, eff_g, eff_b, 0x00, 0xEF])
         # 8-byte secondary color packet
-        packet2 = bytes([0x7E, 0x04, 0x04, r, g, b, 0x00, 0xEF])
+        packet2 = bytes([0x7E, 0x04, 0x04, eff_r, eff_g, eff_b, 0x00, 0xEF])
 
         if immediate and self.is_connected:
             await self._write_bytes(packet1)
@@ -307,14 +318,32 @@ class LEDStripController:
                 self._enqueue_command(black2, high_priority=False)
 
     async def set_brightness(self, level_percent: int, immediate: bool = True):
-        """Set brightness (0-100%)."""
+        """
+        Set brightness (0-100%).
+        Sends both firmware hardware brightness packets AND re-scales the active RGB color
+        so brightness works reliably on 5V USB LED strips.
+        """
         level = max(0, min(100, int(level_percent)))
         self._brightness = level
-        packet = bytes([0x7E, 0x04, 0x01, level, 0x00, 0x00, 0x00, 0x00, 0xEF])
+
+        # Hardware firmware brightness packets (variants for all chipsets)
+        p1 = bytes([0x7E, 0x04, 0x01, level, 0xFF, 0xFF, 0xFF, 0x00, 0xEF])
+        p2 = bytes([0x7E, 0x00, 0x01, level, 0x00, 0x00, 0x00, 0x00, 0xEF])
+        p3 = bytes([0x7E, 0x04, 0x01, level, 0x00, 0x00, 0x00, 0x00, 0xEF])
+
         if immediate and self.is_connected:
-            await self._write_bytes(packet)
+            await self._write_bytes(p1)
+            await self._write_bytes(p2)
+            await self._write_bytes(p3)
         else:
-            self._enqueue_command(packet, high_priority=True)
+            self._enqueue_command(p1, high_priority=True)
+            self._enqueue_command(p2, high_priority=False)
+            self._enqueue_command(p3, high_priority=False)
+
+        # Immediately update current color with new brightness level on 5V strips
+        r, g, b = self._last_rgb
+        if any((r, g, b)):
+            await self.set_color_rgb(r, g, b, immediate=immediate, raw=False)
 
     async def set_effect(self, effect_id: int, immediate: bool = True):
         """

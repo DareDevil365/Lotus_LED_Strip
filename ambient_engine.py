@@ -203,22 +203,13 @@ class AmbientSyncEngine:
                 self.current_s += (target_s - self.current_s) * self.transition_speed
                 self.current_v += (target_v - self.current_v) * self.transition_speed
 
-                # 3. Apply perceptual brightness scale (gamma curve prevents analog LED diode dropout)
-                # Linear 30% on analog LED is too dim (< Vf threshold). Perceptual curve keeps it comfortably visible.
-                norm_bright = self.brightness / 100.0
-                scale = max(0.25, norm_bright ** 0.60)
-                final_v = max(0.30, self.current_v * scale)
+                # 3. Apply brightness scale for 5V USB LED strip
+                norm_bright = max(0.05, min(1.0, self.brightness / 100.0))
+                scale = norm_bright ** 0.75  # Smooth perceptual curve (5% dim -> 100% max bright)
+                final_v = max(0.08, self.current_v * scale)
 
                 # 4. Convert HSV to RGB with 100% saturation
                 r_f, g_f, b_f = colorsys.hsv_to_rgb(self.current_h, self.current_s, final_v)
-                
-                # Ensure the primary channel meets the physical LED turn-on floor (min 35)
-                max_f = max(r_f, g_f, b_f)
-                if max_f > 0.001 and max_f < 0.18:
-                    boost = 0.18 / max_f
-                    r_f *= boost
-                    g_f *= boost
-                    b_f *= boost
 
                 out_r = max(0, min(255, int(round(r_f * 255))))
                 out_g = max(0, min(255, int(round(g_f * 255))))
@@ -230,7 +221,7 @@ class AmbientSyncEngine:
 
                 if delta >= 1 and self.controller and self.controller.is_connected:
                     self._last_sent_rgb = (out_r, out_g, out_b)
-                    await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True)
+                    await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
 
                 if self.on_color_update:
                     self.on_color_update((out_r, out_g, out_b))
