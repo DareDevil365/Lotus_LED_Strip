@@ -35,11 +35,11 @@ class AmbientSyncEngine:
     - User Brightness Scaling: Configurable brightness scale (default 30%)
     """
 
-    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.075, transition_speed: float = 0.16, brightness: int = 30):
+    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.035, transition_speed: float = 0.045, brightness: int = 30):
         self.controller = ble_controller
         self.zone = zone.lower()
         self.update_interval = update_interval
-        self.transition_speed = transition_speed
+        self.transition_speed = transition_speed  # 0.045 = ~1.8s silky smooth cinema transition
         self.brightness = max(5, min(100, int(brightness)))  # Default 30%
         
         self.running = False
@@ -49,6 +49,8 @@ class AmbientSyncEngine:
         self.current_h = 0.075  # Warm Yellow-Orange hue
         self.current_s = 1.0    # 100% Max Saturation (Pure color)
         self.current_v = 0.35   # Baseline value
+        self._target_h = 0.075
+        self._target_v = 0.35
         self._last_sent_rgb = (-1, -1, -1)
         self.on_color_update: Optional[Callable[[Tuple[int, int, int]], None]] = None
 
@@ -166,8 +168,8 @@ class AmbientSyncEngine:
     async def _loop(self):
         """
         Continuous smooth color capture and transition loop.
-        Interpolates in pure HSV space so transitions glide along the color wheel
-        without ever washing out into white or gray.
+        Interpolates in pure HSV space with anti-jitter noise filtering so transitions
+        glide like a cinematic fluid without any jitter, hunting, or stepping.
         """
         attach_to_input_desktop()
         
@@ -175,7 +177,21 @@ class AmbientSyncEngine:
             start_time = time.perf_counter()
             try:
                 # 1. Sample target screen color in HSV
-                target_h, target_s, target_v = self._sample_screen()
+                raw_h, raw_s, raw_v = self._sample_screen()
+
+                # Anti-jitter deadband filter: ignore microscopic noise oscillations
+                dh_raw = abs(raw_h - self._target_h)
+                if dh_raw > 0.5:
+                    dh_raw = 1.0 - dh_raw
+                if dh_raw > 0.012:
+                    self._target_h = raw_h
+
+                if abs(raw_v - self._target_v) > 0.015:
+                    self._target_v = raw_v
+
+                target_h = self._target_h
+                target_s = raw_s
+                target_v = self._target_v
 
                 # 2. Smooth shortest-path Hue interpolation along color circle
                 dh = target_h - self.current_h
@@ -197,11 +213,11 @@ class AmbientSyncEngine:
                 out_g = max(0, min(255, int(round(g_f * 255))))
                 out_b = max(0, min(255, int(round(b_f * 255))))
 
-                # 5. Send BLE packet when color shifts
+                # 5. Send BLE packet when color shifts (even 1-unit micro step)
                 last_r, last_g, last_b = self._last_sent_rgb
                 delta = abs(out_r - last_r) + abs(out_g - last_g) + abs(out_b - last_b)
 
-                if delta >= 2 and self.controller and self.controller.is_connected:
+                if delta >= 1 and self.controller and self.controller.is_connected:
                     self._last_sent_rgb = (out_r, out_g, out_b)
                     await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True)
 
@@ -214,5 +230,5 @@ class AmbientSyncEngine:
                 logger.error(f"Ambient loop error: {e}")
 
             elapsed = time.perf_counter() - start_time
-            sleep_time = max(0.010, self.update_interval - elapsed)
+            sleep_time = max(0.008, self.update_interval - elapsed)
             await asyncio.sleep(sleep_time)
