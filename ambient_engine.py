@@ -102,16 +102,16 @@ class AmbientSyncEngine:
         delta = max_c - min_c
         sat = np.where(max_c > 0.02, delta / (max_c + 1e-6), 0.0)
 
-        # Measure real colored area on screen (needs at least ~6% of screen to be chromatic)
-        vivid_mask = (sat > 0.22) & (max_c > 0.18)
+        # Measure real colored area on screen (at least ~3% of screen to be chromatic)
+        vivid_mask = (sat > 0.18) & (max_c > 0.14)
         vivid_count = int(np.sum(vivid_mask))
         total_pixels = len(sat)  # 1024
         color_coverage = vivid_count / float(total_pixels)
 
-        # If at least 6% of the screen has real vivid color (e.g. video, game, banner, graphic)
-        if color_coverage >= 0.06:
+        # If at least 3% of the screen has real vivid color (e.g. video, game, banner, graphic)
+        if color_coverage >= 0.03:
             # Weighted average favoring vivid pixels
-            weights = (sat ** 2.0) * (max_c ** 0.8)
+            weights = (sat ** 1.8) * (max_c ** 0.8)
             w_sum = float(np.sum(weights))
             if w_sum > 0.001:
                 weighted_r = float(np.sum(r_flat * weights) / w_sum)
@@ -121,7 +121,7 @@ class AmbientSyncEngine:
                 
                 # Maximum 100% saturation for punchy, vivid pure color
                 boosted_s = 1.0
-                boosted_v = min(1.0, max(0.55, v * 1.3))
+                boosted_v = min(1.0, max(0.60, v * 1.4))
                 return h, boosted_s, boosted_v
 
         # Otherwise (Dark Mode, code editors, GitHub dashboard, text documents):
@@ -203,12 +203,23 @@ class AmbientSyncEngine:
                 self.current_s += (target_s - self.current_s) * self.transition_speed
                 self.current_v += (target_v - self.current_v) * self.transition_speed
 
-                # 3. Apply brightness scale (30% default)
-                scale = self.brightness / 100.0
-                final_v = max(0.05, self.current_v * scale)
+                # 3. Apply perceptual brightness scale (gamma curve prevents analog LED diode dropout)
+                # Linear 30% on analog LED is too dim (< Vf threshold). Perceptual curve keeps it comfortably visible.
+                norm_bright = self.brightness / 100.0
+                scale = max(0.25, norm_bright ** 0.60)
+                final_v = max(0.30, self.current_v * scale)
 
-                # 4. Convert HSV to RGB with 100% saturation (0 minimum floor on inactive channels)
+                # 4. Convert HSV to RGB with 100% saturation
                 r_f, g_f, b_f = colorsys.hsv_to_rgb(self.current_h, self.current_s, final_v)
+                
+                # Ensure the primary channel meets the physical LED turn-on floor (min 35)
+                max_f = max(r_f, g_f, b_f)
+                if max_f > 0.001 and max_f < 0.18:
+                    boost = 0.18 / max_f
+                    r_f *= boost
+                    g_f *= boost
+                    b_f *= boost
+
                 out_r = max(0, min(255, int(round(r_f * 255))))
                 out_g = max(0, min(255, int(round(g_f * 255))))
                 out_b = max(0, min(255, int(round(b_f * 255))))
