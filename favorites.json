@@ -1,8 +1,20 @@
 [
   {
-    "name": "Recovered Cyan",
+    "name": "Neon Cyan",
     "r": 0,
     "g": 255,
+    "b": 240
+  },
+  {
+    "name": "Cozy Fire",
+    "r": 255,
+    "g": 90,
+    "b": 10
+  },
+  {
+    "name": "Deep Lavender",
+    "r": 150,
+    "g": 100,
     "b": 255
   }
 ]

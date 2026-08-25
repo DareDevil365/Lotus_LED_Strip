@@ -1,6 +1,18 @@
-# 💡 MELK-OA10 Bluetooth LED Strip Controller & Ambient Screen Sync
+# 💡 Lotus / MELK-OA10 Bluetooth LED Strip Controller & Ambient Screen Sync
 
-Control your **MELK-OA10** (`BE:69:29:00:0A:23`) Bluetooth LED Light Strip directly from your Windows PC terminal! Features ultra-smooth **Ambient Screen Color Sync**, **Music Reactive mode**, **Rainbow Cycle**, **Strobe**, **Breathing**, **Favorites**, **Auto-Off Timer**, and more.
+An advanced, feature-packed Windows CLI controller for **MELK-OA10**, **ELK-BLEDOM**, and **Lotus Lantern** Bluetooth RGB LED Light Strips.
+
+Features ultra-smooth **Ambient Screen Color Sync** (HSV shortest-path with zero white wash), **11 Procedural Motion Patterns** (Aurora, Campfire, Ocean Tide, Cyberpunk...), **20 Hardware Firmware Dynamic Animations**, **Real-Time FFT Music Reactive Lighting**, **Favorites Manager**, **Auto-Off Sleep Timer**, and a full interactive terminal dashboard.
+
+---
+
+## 📦 Installation
+
+```bash
+git clone https://github.com/DareDevil365/Lotus_LED_Strip.git
+cd Lotus_LED_Strip
+pip install -r requirements.txt
+```
 
 ---
 
@@ -10,6 +22,11 @@ Control your **MELK-OA10** (`BE:69:29:00:0A:23`) Bluetooth LED Light Strip direc
 ```bash
 python main.py
 ```
+> **Tip:** If your device has a different MAC address, pass `--mac`:
+> ```bash
+> python main.py --mac "XX:XX:XX:XX:XX:XX"
+> ```
+> Or use `python main.py scan` to find nearby Bluetooth strips.
 
 ### ✨ Features at a Glance
 
