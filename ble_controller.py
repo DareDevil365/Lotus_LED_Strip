@@ -277,17 +277,13 @@ class LEDStripController:
         else:
             eff_r, eff_g, eff_b = r, g, b
 
-        # 9-byte primary MELK-OA10 color packet
-        packet1 = bytes([0x7E, 0x07, 0x05, 0x03, eff_r, eff_g, eff_b, 0x00, 0xEF])
-        # 8-byte secondary color packet
-        packet2 = bytes([0x7E, 0x04, 0x04, eff_r, eff_g, eff_b, 0x00, 0xEF])
+        # Standard 9-byte MELK-OA10 / Lotus color packet
+        packet = bytes([0x7E, 0x07, 0x05, 0x03, eff_r, eff_g, eff_b, 0x00, 0xEF])
 
         if immediate and self.is_connected:
-            await self._write_bytes(packet1)
-            await self._write_bytes(packet2)
+            await self._write_bytes(packet)
         else:
-            self._enqueue_command(packet1, high_priority=True)
-            self._enqueue_command(packet2, high_priority=False)
+            self._enqueue_command(packet, high_priority=True)
 
     async def set_power(self, state: bool, immediate: bool = True):
         """Turn strip ON (state=True) or OFF (state=False)."""
