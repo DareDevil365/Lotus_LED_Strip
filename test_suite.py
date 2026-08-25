@@ -185,7 +185,7 @@ class TestAmbientEngineMath(unittest.TestCase):
         
         # Test 1: Sampling active interactive desktop
         h, s, v = engine._sample_screen()
-        self.assertGreaterEqual(s, 0.50, "Saturation dropped below baseline warmth threshold!")
+        self.assertGreaterEqual(s, 0.95, "Saturation dropped below 100% max saturation!")
         self.assertLessEqual(s, 1.0)
         self.assertGreaterEqual(v, 0.10)
         self.assertLessEqual(v, 1.0)

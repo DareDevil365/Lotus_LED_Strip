@@ -45,10 +45,10 @@ class AmbientSyncEngine:
         self.running = False
         self._sync_task: Optional[asyncio.Task] = None
 
-        # Start at a soft, warm amber glow
-        self.current_h = 0.08   # Warm Amber hue
-        self.current_s = 0.60   # Pleasant warm saturation
-        self.current_v = 0.35   # Gentle baseline
+        # Start at a rich, warm amber glow with 100% saturation
+        self.current_h = 0.075  # Warm Yellow-Orange hue
+        self.current_s = 1.0    # 100% Max Saturation (Pure color)
+        self.current_v = 0.35   # Baseline value
         self._last_sent_rgb = (-1, -1, -1)
         self.on_color_update: Optional[Callable[[Tuple[int, int, int]], None]] = None
 
@@ -109,7 +109,7 @@ class AmbientSyncEngine:
         # If at least 6% of the screen has real vivid color (e.g. video, game, banner, graphic)
         if color_coverage >= 0.06:
             # Weighted average favoring vivid pixels
-            weights = (sat ** 1.8) * (max_c ** 0.6)
+            weights = (sat ** 2.0) * (max_c ** 0.8)
             w_sum = float(np.sum(weights))
             if w_sum > 0.001:
                 weighted_r = float(np.sum(r_flat * weights) / w_sum)
@@ -117,9 +117,9 @@ class AmbientSyncEngine:
                 weighted_b = float(np.sum(b_flat * weights) / w_sum)
                 h, s, v = colorsys.rgb_to_hsv(weighted_r, weighted_g, weighted_b)
                 
-                # Proportional saturation based on how much of the screen is colored
-                boosted_s = min(1.0, max(0.75, s * (1.2 + color_coverage)))
-                boosted_v = min(1.0, max(0.50, v * 1.2))
+                # Maximum 100% saturation for punchy, vivid pure color
+                boosted_s = 1.0
+                boosted_v = min(1.0, max(0.55, v * 1.3))
                 return h, boosted_s, boosted_v
 
         # Otherwise (Dark Mode, code editors, GitHub dashboard, text documents):
@@ -128,15 +128,15 @@ class AmbientSyncEngine:
 
         if avg_brightness < 0.28:
             # Dark Mode UI (mostly black/gray with small icons):
-            # Rich, cozy Warm Yellow-Orange Candlelight glow (~2400K) — soothing for eyes in dark rooms
-            h = 0.078  # Yellow-Orange Warm Light (~28° on color wheel)
-            s = 0.88   # Rich warm saturation (prevents washed-out tone)
+            # 100% pure saturated Yellow-Orange Warm Light (~27° on color wheel) — rich, cozy & zero white
+            h = 0.075  # Warm Yellow-Orange
+            s = 1.0    # 100% Max Saturation (Pure, rich color)
             v = max(0.25, min(0.50, avg_brightness * 1.2 + 0.25))
         else:
             # Bright / White document (Word, PDF, white webpage):
-            # Soft warm golden glow (~3000K) to cut eye strain from bright screens
-            h = 0.088  # Golden Warm Light
-            s = 0.70   # Balanced warmth
+            # 100% pure saturated Golden Warm Light to cut eye strain
+            h = 0.085  # Golden Warm Light
+            s = 1.0    # 100% Max Saturation
             v = max(0.35, min(0.65, avg_brightness))
 
         return h, s, v
@@ -189,13 +189,13 @@ class AmbientSyncEngine:
 
                 # 3. Apply brightness scale (30% default)
                 scale = self.brightness / 100.0
-                final_v = max(0.10, self.current_v * scale)
+                final_v = max(0.05, self.current_v * scale)
 
-                # 4. Convert HSV to RGB
+                # 4. Convert HSV to RGB with 100% saturation (0 minimum floor on inactive channels)
                 r_f, g_f, b_f = colorsys.hsv_to_rgb(self.current_h, self.current_s, final_v)
-                out_r = max(10, min(255, int(round(r_f * 255))))
-                out_g = max(10, min(255, int(round(g_f * 255))))
-                out_b = max(10, min(255, int(round(b_f * 255))))
+                out_r = max(0, min(255, int(round(r_f * 255))))
+                out_g = max(0, min(255, int(round(g_f * 255))))
+                out_b = max(0, min(255, int(round(b_f * 255))))
 
                 # 5. Send BLE packet when color shifts
                 last_r, last_g, last_b = self._last_sent_rgb
