@@ -190,23 +190,14 @@ class TestAmbientEngineMath(unittest.TestCase):
         self.assertGreaterEqual(v, 0.10)
         self.assertLessEqual(v, 1.0)
 
-    def test_hsv_shortest_path_interpolation(self):
+    def test_5v_hardware_illumination_floor(self):
         ctrl = LEDStripController(DEFAULT_MAC)
-        engine = AmbientSyncEngine(ctrl, transition_speed=0.2)
-        engine.current_h = 0.95  # Near red/magenta
-        target_h = 0.05          # Near red/orange
+        engine = AmbientSyncEngine(ctrl, brightness=30)
         
-        # Shortest path: distance across 0/1 boundary is +0.10 (not -0.90)
-        dh = target_h - engine.current_h
-        if dh > 0.5:
-            dh -= 1.0
-        elif dh < -0.5:
-            dh += 1.0
-        self.assertAlmostEqual(dh, 0.10)
-
-        # 1 step of glide along shortest path
-        engine.current_h = (engine.current_h + dh * engine.transition_speed) % 1.0
-        self.assertAlmostEqual(engine.current_h, 0.97)
+        # For various hues, verify primary channel is always >= 45 to protect 5V LEDs
+        for test_h in [0.005, 0.075, 0.33, 0.50, 0.58, 0.78]:
+            r, g, b = engine.compute_rgb_for_hue(test_h)
+            self.assertGreaterEqual(max(r, g, b), 45, f"5V illumination floor breached for hue {test_h}!")
 
     def test_brightness_scaling(self):
         ctrl = LEDStripController(DEFAULT_MAC)

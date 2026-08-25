@@ -25,68 +25,145 @@ def attach_to_input_desktop():
         logger.debug(f"Input desktop attach error: {e}")
 
 # ---------------------------------------------------------------------------
-# Fixed Cinematic Themes (Rock-Solid Eye-Comfort Bias Lights)
+# Distinct Stable Color Themes (Clean, 100% Saturated Palettes)
 # ---------------------------------------------------------------------------
-CINEMATIC_THEMES = {
-    "warm_orange": (0.075, "🕯️ Warm Yellow-Orange (Candlelight / Eye Comfort)", (255, 120, 0)),
-    "gotham_blue": (0.580, "🦇 Gotham Noir Slate Blue (Cinematic Night)", (0, 130, 255)),
-    "cyber_cyan": (0.500, "💎 Sci-Fi Electric Cyan (Tech Glow)", (0, 240, 255)),
-    "neon_magenta": (0.830, "🌆 Cyberpunk Neon Magenta (Retro Synth)", (255, 0, 140)),
-    "matrix_green": (0.330, "🌲 Matrix Emerald Green (Terminal Glow)", (0, 255, 60)),
-    "golden_sunset": (0.100, "🌅 Golden Hour Sunset (Warm Amber)", (255, 170, 0)),
-}
+# (Theme Name, Base Hue, Base RGB preview)
+PALETTE_THEMES = [
+    ("WARM_ORANGE", 0.075, "🕯️ Warm Yellow-Orange (Eye Comfort / Dark Mode)", (255, 128, 0)),
+    ("GOTHAM_BLUE", 0.580, "🦇 Deep Slate / Electric Blue", (0, 130, 255)),
+    ("CYBER_CYAN",  0.500, "💎 Sci-Fi Pure Cyan", (0, 255, 255)),
+    ("MATRIX_GREEN",0.330, "🌲 Vibrant Emerald Green", (0, 255, 60)),
+    ("NEON_PURPLE", 0.780, "🔮 Rich Purple / Magenta", (200, 0, 255)),
+    ("CRIMSON_RED", 0.005, "🔴 Deep Crimson Red", (255, 0, 30)),
+    ("GOLDEN_AMBER",0.110, "🌅 Warm Golden Amber", (255, 180, 0)),
+]
+
+def classify_screen_theme(r_flat: np.ndarray, g_flat: np.ndarray, b_flat: np.ndarray) -> Tuple[str, float, str, Tuple[int, int, int]]:
+    """
+    Classify the screen's core theme into a solid, distinct palette color.
+    Uses strict majority voting to prevent micro-fluctuations from icons or thumbnails.
+    """
+    max_c = np.maximum(np.maximum(r_flat, g_flat), b_flat)
+    min_c = np.minimum(np.minimum(r_flat, g_flat), b_flat)
+    delta = max_c - min_c
+    sat = np.where(max_c > 0.02, delta / (max_c + 1e-6), 0.0)
+
+    avg_bright = float(np.mean(max_c))
+    
+    # Check if there is significant colored content (>8% of screen)
+    vivid_mask = (sat > 0.20) & (max_c > 0.15)
+    vivid_pixels = int(np.sum(vivid_mask))
+    total_pixels = len(sat)  # 1024
+    coverage = vivid_pixels / float(total_pixels)
+
+    if coverage < 0.06:
+        # Dark mode, reading text, or general coding -> Stable Warm Yellow-Orange
+        if avg_bright < 0.30:
+            return "WARM_ORANGE", 0.075, "🕯️ Warm Yellow-Orange (Dark Mode / Eye Comfort)", (255, 128, 0)
+        else:
+            return "GOLDEN_AMBER", 0.095, "🌅 Soft Golden Warmth (Bright Page / Anti-Glare)", (255, 180, 0)
+
+    # Calculate dominant color across the vivid areas
+    weights = (sat ** 1.8) * (max_c ** 0.6)
+    w_sum = float(np.sum(weights))
+    if w_sum <= 0.001:
+        return "WARM_ORANGE", 0.075, "🕯️ Warm Yellow-Orange (Eye Comfort)", (255, 128, 0)
+
+    w_r = float(np.sum(r_flat * weights) / w_sum)
+    w_g = float(np.sum(g_flat * weights) / w_sum)
+    w_b = float(np.sum(b_flat * weights) / w_sum)
+    raw_h, raw_s, raw_v = colorsys.rgb_to_hsv(w_r, w_g, w_b)
+
+    # Map raw continuous hue to the nearest solid discrete theme:
+    # 0.00 - 0.04 -> Red
+    # 0.04 - 0.14 -> Warm Orange / Amber
+    # 0.15 - 0.42 -> Green
+    # 0.43 - 0.53 -> Cyan
+    # 0.54 - 0.70 -> Blue
+    # 0.71 - 0.95 -> Purple / Magenta
+    # 0.95 - 1.00 -> Red
+    if raw_h < 0.035 or raw_h >= 0.95:
+        return "CRIMSON_RED", 0.005, "🔴 Deep Crimson Red", (255, 0, 30)
+    elif 0.035 <= raw_h < 0.14:
+        return "WARM_ORANGE", 0.075, "🕯️ Warm Yellow-Orange", (255, 128, 0)
+    elif 0.14 <= raw_h < 0.42:
+        return "MATRIX_GREEN", 0.330, "🌲 Vibrant Emerald Green", (0, 255, 60)
+    elif 0.42 <= raw_h < 0.53:
+        return "CYBER_CYAN", 0.500, "💎 Sci-Fi Pure Cyan", (0, 255, 255)
+    elif 0.53 <= raw_h < 0.70:
+        return "GOTHAM_BLUE", 0.580, "🦇 Deep Slate / Electric Blue", (0, 130, 255)
+    else:
+        return "NEON_PURPLE", 0.780, "🔮 Rich Purple / Magenta", (200, 0, 255)
+
 
 class AmbientSyncEngine:
     """
-    Fixed Cinematic Ambient Bias Lighting Engine.
+    Intelligent Stable Theme Ambient Engine.
     
-    Features:
-    - 🔒 Rock-Solid Color Lock: Locks firmly onto one fixed cinematic color tone.
-      Zero fluctuations, zero switching, zero hunting, and zero flickering.
-    - 5V Hardware Illumination Floor: Guaranteed active minimum voltage so 5V USB LEDs never turn off.
-    - 100% Saturated Pure Gamut: 0% white/gray wash, rendering pure, rich, eye-soothing backlight.
+    Rules & Stability Protections:
+    1. Zero Continuous BLE Flooding: Only transmits when a major screen theme genuinely shifts.
+    2. Debounced Scene Detection: Requires a new theme to persist steadily for at least 1.5 seconds
+       before switching, ignoring scrolling, thumbnail browsing, and video motion.
+    3. Solid Discrete Theme Mapping: Snaps colors to pure, rich 100% saturated palettes.
+    4. 5V Hardware Illumination Floor: Guaranteed active minimum voltage so 5V USB LEDs never turn off.
     """
 
-    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.050, transition_speed: float = 0.05, brightness: int = 30, theme: str = "warm_orange"):
+    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.200, brightness: int = 30):
         self.controller = ble_controller
         self.zone = zone.lower()
-        self.update_interval = update_interval
-        self.transition_speed = transition_speed
+        self.update_interval = update_interval  # Check every 200ms
         self.brightness = max(10, min(100, int(brightness)))  # Default 30%
-        self.theme_key = theme if theme in CINEMATIC_THEMES else "warm_orange"
         
         self.running = False
         self._sync_task: Optional[asyncio.Task] = None
 
-        # Lock to chosen cinematic theme hue
-        theme_h, self.theme_name, self.base_rgb = CINEMATIC_THEMES[self.theme_key]
-        self.locked_h = theme_h
-        self.current_h = theme_h
-        self.current_s = 1.0    # 100% Saturation
-        self.current_v = 1.0
+        # Currently locked active theme
+        self.locked_theme_key = "WARM_ORANGE"
+        self.locked_hue = 0.075
+        self.locked_name = "🕯️ Warm Yellow-Orange (Eye Comfort / Dark Mode)"
+        
+        # Debounce counter: candidate theme must hold for multiple consecutive checks (~1.5s)
+        self._candidate_theme_key = self.locked_theme_key
+        self._candidate_hold_count = 0
+        self._required_holds = 6  # 6 * 200ms = 1.2s stability lock
 
         self._last_sent_rgb = (-1, -1, -1)
         self.on_color_update: Optional[Callable[[Tuple[int, int, int]], None]] = None
 
+    def _crop_region(self, img: Image.Image) -> Image.Image:
+        """Crop image based on selected zone."""
+        w, h = img.size
+        z = self.zone
+        if z == "center":
+            return img.crop((int(w * 0.20), int(h * 0.20), int(w * 0.80), int(h * 0.80)))
+        elif z == "top":
+            return img.crop((0, 0, w, int(h * 0.35)))
+        elif z == "bottom":
+            return img.crop((0, int(h * 0.65), w, h))
+        elif z == "left":
+            return img.crop((0, 0, int(w * 0.35), h))
+        elif z == "right":
+            return img.crop((int(w * 0.65), 0, w, h))
+        return img
+
     def _sample_screen(self) -> Tuple[float, float, float]:
         """Capture screen and return current locked HSV."""
-        return self.locked_h, 1.0, 0.90
+        return self.locked_hue, 1.0, 0.90
 
-    def compute_output_rgb(self) -> Tuple[int, int, int]:
+    def compute_rgb_for_hue(self, hue: float) -> Tuple[int, int, int]:
         """
-        Compute the 100% saturated, brightness-scaled, rock-solid RGB color.
-        Ensures the 5V hardware illumination floor is maintained so LEDs never turn off.
+        Compute the 100% saturated, brightness-scaled RGB color for 5V LED strips.
         """
         norm_bright = max(0.10, min(1.0, self.brightness / 100.0))
-        r_f, g_f, b_f = colorsys.hsv_to_rgb(self.locked_h, 1.0, 1.0)
+        r_f, g_f, b_f = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
 
-        # Scale with user brightness (e.g. 30% -> peak ~85)
+        # Scale output with user brightness
         peak_scale = 255.0 * (norm_bright ** 0.65)
         out_r = max(0, min(255, int(round(r_f * peak_scale))))
         out_g = max(0, min(255, int(round(g_f * peak_scale))))
         out_b = max(0, min(255, int(round(b_f * peak_scale))))
 
-        # 5V Hardware Illumination Floor: Primary active channel must be >= 45
+        # 5V Hardware Illumination Floor: Primary active channel must be >= 50
         peak_ch = max(out_r, out_g, out_b)
         min_safe_floor = max(45, int(55 * norm_bright))
         if peak_ch < min_safe_floor and peak_ch > 0:
@@ -97,8 +174,31 @@ class AmbientSyncEngine:
 
         return out_r, out_g, out_b
 
+    def _detect_screen_theme(self) -> Tuple[str, float, str, Tuple[int, int, int]]:
+        """Grab screen and classify its theme."""
+        attach_to_input_desktop()
+        try:
+            full_img = ImageGrab.grab()
+        except Exception:
+            try:
+                attach_to_input_desktop()
+                full_img = ImageGrab.grab()
+            except Exception as e:
+                logger.debug(f"Screen capture fallback: {e}")
+                return self.locked_theme_key, self.locked_hue, self.locked_name, (255, 128, 0)
+
+        region = self._crop_region(full_img)
+        small = region.resize((32, 32), Image.Resampling.BILINEAR)
+        arr = np.array(small, dtype=np.float32)
+
+        r_flat = arr[:, :, 0].flatten() / 255.0
+        g_flat = arr[:, :, 1].flatten() / 255.0
+        b_flat = arr[:, :, 2].flatten() / 255.0
+
+        return classify_screen_theme(r_flat, g_flat, b_flat)
+
     async def start(self):
-        """Start the locked cinematic ambient bias light (auto powers ON the strip)."""
+        """Start the stable theme detection loop (auto powers ON the strip)."""
         if self.running:
             return
         if self.controller and self.controller.is_connected:
@@ -108,10 +208,10 @@ class AmbientSyncEngine:
                 logger.debug(f"Auto power-on warning: {e}")
         self.running = True
         self._sync_task = asyncio.create_task(self._loop())
-        logger.info(f"Locked Ambient Bias Light started [{self.theme_name}, Brightness: {self.brightness}%]")
+        logger.info(f"Stable Theme Ambient Light started [Zone: {self.zone}, Brightness: {self.brightness}%]")
 
     async def stop(self):
-        """Stop ambient bias lighting."""
+        """Stop ambient lighting."""
         self.running = False
         if self._sync_task:
             self._sync_task.cancel()
@@ -120,15 +220,20 @@ class AmbientSyncEngine:
 
     async def _loop(self):
         """
-        Rock-solid locked ambient loop.
-        Transmits the solid base theme color once and maintains it with zero fluctuations.
+        Intelligent Stable Theme Loop.
+        Samples the screen periodically, but only switches when the screen theme
+        has changed and remained stable for >= 1.2 seconds.
+        Transmits ONLY when changing themes — zero continuous packet spamming.
         """
         attach_to_input_desktop()
         
-        # 1. Compute solid locked color
-        out_r, out_g, out_b = self.compute_output_rgb()
+        # 1. Initial screen theme detection
+        theme_key, hue, name, _ = self._detect_screen_theme()
+        self.locked_theme_key = theme_key
+        self.locked_hue = hue
+        self.locked_name = name
 
-        # 2. Immediately send to LED strip
+        out_r, out_g, out_b = self.compute_rgb_for_hue(self.locked_hue)
         if self.controller and self.controller.is_connected:
             self._last_sent_rgb = (out_r, out_g, out_b)
             await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
@@ -136,12 +241,41 @@ class AmbientSyncEngine:
         if self.on_color_update:
             self.on_color_update((out_r, out_g, out_b))
 
-        # 3. Maintain steady state (heartbeat keepalive every 1.5s with zero color change)
+        # 2. Main monitoring loop (rate-limited, debounced)
         while self.running:
             try:
-                await asyncio.sleep(1.0)
-                if self.controller and self.controller.is_connected:
-                    await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
+                await asyncio.sleep(self.update_interval)
+
+                cand_key, cand_hue, cand_name, _ = self._detect_screen_theme()
+
+                if cand_key != self.locked_theme_key:
+                    # New theme candidate detected
+                    if cand_key == self._candidate_theme_key:
+                        self._candidate_hold_count += 1
+                        # If candidate holds steady for >= 1.2 seconds:
+                        if self._candidate_hold_count >= self._required_holds:
+                            self.locked_theme_key = cand_key
+                            self.locked_hue = cand_hue
+                            self.locked_name = cand_name
+                            self._candidate_hold_count = 0
+
+                            # Send new theme color ONCE
+                            out_r, out_g, out_b = self.compute_rgb_for_hue(self.locked_hue)
+                            if self.controller and self.controller.is_connected:
+                                self._last_sent_rgb = (out_r, out_g, out_b)
+                                await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
+
+                            if self.on_color_update:
+                                self.on_color_update((out_r, out_g, out_b))
+                    else:
+                        # Reset candidate tracker
+                        self._candidate_theme_key = cand_key
+                        self._candidate_hold_count = 1
+                else:
+                    # Current theme is still holding
+                    self._candidate_theme_key = self.locked_theme_key
+                    self._candidate_hold_count = 0
+
             except asyncio.CancelledError:
                 break
             except Exception as e:

@@ -263,25 +263,23 @@ def render_help_panel() -> Panel:
 # Effect Modes
 # ---------------------------------------------------------------------------
 
-async def run_ambient_sync_cli(controller: LEDStripController, zone: str = "full", brightness: int = 30, theme: str = "warm_orange"):
-    """Run fixed cinematic ambient bias light with rock-solid stability."""
-    engine = AmbientSyncEngine(controller, zone=zone, brightness=brightness, theme=theme)
-    out_r, out_g, out_b = engine.compute_output_rgb()
-
-    preview_text = Text()
-    preview_text.append("  Locked Color:  ", style="bold white")
-    preview_text.append(" " * 22, style=f"on rgb({out_r},{out_g},{out_b})")
-    preview_text.append(f"  RGB({out_r:3d}, {out_g:3d}, {out_b:3d})  #{out_r:02x}{out_g:02x}{out_b:02x}", style="bold green")
-
+async def run_ambient_sync_cli(controller: LEDStripController, zone: str = "full", brightness: int = 30):
+    """Run intelligent stable theme ambient lighting."""
+    engine = AmbientSyncEngine(controller, zone=zone, brightness=brightness)
+    
     console.print(Panel(
-        f"[bold cyan]🔒 Fixed Cinematic Ambient Bias Light Active[/bold cyan]\n"
-        f"Theme: [bold yellow]{engine.theme_name}[/bold yellow] | Brightness: [bold green]{brightness}%[/bold green]\n"
-        f"Stability: [bold green]LOCKED SOLID (Zero Fluctuations / No Switching)[/bold green]\n\n"
+        f"[bold cyan]🖥️ Intelligent Theme Ambient Lighting Active[/bold cyan]\n"
+        f"Zone: [bold yellow]{zone.upper()}[/bold yellow] | Brightness: [bold green]{brightness}%[/bold green]\n"
+        f"Behavior: [bold green]Adopts screen/movie theme color and holds rock-solid (Zero Fluctuations)[/bold green]\n"
         f"Press [bold red]Ctrl+C[/bold red] to return to menu.",
-        title="[bold green]Cinematic Bias Light[/bold green]", border_style="cyan"
+        title="[bold green]Stable Ambient Light[/bold green]", border_style="cyan"
     ))
-    console.print(Panel(preview_text, border_style="green"))
 
+    def on_theme_change(rgb):
+        r, g, b = rgb
+        console.print(f"[bold green]✨ Screen Theme:[/bold green] {engine.locked_name}  RGB({r}, {g}, {b}) ", make_color_block(r, g, b, width=12))
+
+    engine.on_color_update = on_theme_change
     await engine.start()
 
     try:
@@ -291,7 +289,7 @@ async def run_ambient_sync_cli(controller: LEDStripController, zone: str = "full
         pass
     finally:
         await engine.stop()
-        console.print("[yellow]Ambient Bias Light stopped.[/yellow]")
+        console.print("[yellow]Ambient Theme Lighting stopped.[/yellow]")
 
 
 async def run_color_cycle(controller: LEDStripController, speed: str = "medium"):
@@ -751,24 +749,13 @@ async def interactive_menu(controller: LEDStripController):
                 await asyncio.sleep(1.2)
                 continue
 
-            console.print("[dim]Themes: 1. 🕯️ Warm Yellow-Orange [Default] | 2. 🦇 Gotham Slate Blue | 3. 💎 Sci-Fi Cyan | 4. 🌆 Cyberpunk Magenta | 5. 🌅 Golden Sunset[/dim]")
-            theme_choice = Prompt.ask("Select theme (1-5, or name)", default="1").strip()
-            theme_map = {
-                "1": "warm_orange", "warm": "warm_orange", "orange": "warm_orange",
-                "2": "gotham_blue", "blue": "gotham_blue", "gotham": "gotham_blue", "batman": "gotham_blue",
-                "3": "cyber_cyan", "cyan": "cyber_cyan", "scifi": "cyber_cyan",
-                "4": "neon_magenta", "magenta": "neon_magenta", "cyberpunk": "neon_magenta",
-                "5": "golden_sunset", "sunset": "golden_sunset", "gold": "golden_sunset"
-            }
-            selected_theme = theme_map.get(theme_choice.lower(), "warm_orange")
-
             bright_in = Prompt.ask("Ambient Brightness % (10-100, default 30)", default="30").strip()
             if bright_in.lower() in ["q", "back"]:
                 continue
             bright_val = int(bright_in.rstrip("%")) if bright_in.rstrip("%").isdigit() else 30
             bright_val = max(10, min(100, bright_val))
 
-            await run_ambient_sync_cli(controller, zone=zone, brightness=bright_val, theme=selected_theme)
+            await run_ambient_sync_cli(controller, zone=zone, brightness=bright_val)
             Prompt.ask("\nPress Enter to return to menu...")
 
         # ------- Option 2: Set Color -------
