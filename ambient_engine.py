@@ -29,11 +29,10 @@ class AmbientSyncEngine:
     """
     High-performance, ultra-smooth Ambient Screen Color Sync Engine.
     Features:
-    - Pure HSV-Space Transitions: Colors transition along the color wheel with 100% saturation (never passes through gray/white)
-    - Anti-White Suppression: White & gray backgrounds are filtered out; vivid colors are super-charged
-    - Soft Warm Warmth Fallback: Neutral white documents emit a cozy warm amber glow instead of harsh white
+    - Coverage-Aware Color Extraction: Only shifts to vibrant colors when there is meaningful colored content on screen (>4% coverage)
+    - Dark-Mode & Text Shield: Dark mode and text pages emit a gentle, dim warm ambient glow instead of latching onto tiny 5px blue buttons
+    - Pure HSV-Space Transitions: Smooth circular Hue transitions with zero white/gray bleed
     - User Brightness Scaling: Configurable brightness scale (default 30%)
-    - Interactive Desktop Attachment for 100% reliable Windows screen capture
     """
 
     def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.075, transition_speed: float = 0.16, brightness: int = 30):
@@ -46,10 +45,10 @@ class AmbientSyncEngine:
         self.running = False
         self._sync_task: Optional[asyncio.Task] = None
 
-        # Start at a rich warm amber glow in HSV
+        # Start at a soft, warm amber glow
         self.current_h = 0.08   # Warm Amber hue
-        self.current_s = 0.90   # Rich saturation
-        self.current_v = 0.85   # Base intensity (scaled by brightness)
+        self.current_s = 0.60   # Pleasant warm saturation
+        self.current_v = 0.35   # Gentle baseline
         self._last_sent_rgb = (-1, -1, -1)
         self.on_color_update: Optional[Callable[[Tuple[int, int, int]], None]] = None
 
@@ -72,7 +71,7 @@ class AmbientSyncEngine:
     def _sample_screen(self) -> Tuple[float, float, float]:
         """
         Capture interactive screen, crop zone, downsample, and extract dominant vibrant color in (H, S, V).
-        Penalizes white/gray text and backgrounds so colors are deep, rich, and saturated.
+        Uses coverage-aware filtering so small buttons or icons don't falsely turn a dark screen into cyan.
         """
         attach_to_input_desktop()
         
@@ -95,34 +94,51 @@ class AmbientSyncEngine:
         g_flat = arr[:, :, 1].flatten() / 255.0
         b_flat = arr[:, :, 2].flatten() / 255.0
 
-        # Calculate saturation for each pixel
+        # Calculate saturation and value for each pixel
         max_c = np.maximum(np.maximum(r_flat, g_flat), b_flat)
         min_c = np.minimum(np.minimum(r_flat, g_flat), b_flat)
         delta = max_c - min_c
         sat = np.where(max_c > 0.02, delta / (max_c + 1e-6), 0.0)
 
-        # Aggressive white & gray suppression:
-        # Heavy penalty if saturation is low or all RGB channels are bright white
-        is_white_or_gray = (sat < 0.12) | ((r_flat > 0.80) & (g_flat > 0.80) & (b_flat > 0.80))
-        weights = np.where(is_white_or_gray, 0.0001, (sat ** 2.2) * (max_c ** 0.5) + 0.05)
-        w_sum = float(np.sum(weights))
+        # Measure real colored area on screen (needs at least ~4% of screen to be chromatic)
+        vivid_mask = (sat > 0.20) & (max_c > 0.15)
+        vivid_count = int(np.sum(vivid_mask))
+        total_pixels = len(sat)  # 1024
+        color_coverage = vivid_count / float(total_pixels)
 
-        has_vivid_color = np.sum(sat > 0.15) > 2
+        # If at least 4% of the screen has real vivid color (e.g. video, game, banner, graphic)
+        if color_coverage >= 0.04:
+            # Weighted average favoring vivid pixels
+            weights = (sat ** 1.8) * (max_c ** 0.6)
+            w_sum = float(np.sum(weights))
+            if w_sum > 0.001:
+                weighted_r = float(np.sum(r_flat * weights) / w_sum)
+                weighted_g = float(np.sum(g_flat * weights) / w_sum)
+                weighted_b = float(np.sum(b_flat * weights) / w_sum)
+                h, s, v = colorsys.rgb_to_hsv(weighted_r, weighted_g, weighted_b)
+                
+                # Proportional saturation based on how much of the screen is colored
+                # 4% coverage -> s ~ 0.70; 25%+ coverage -> s ~ 0.95
+                boosted_s = min(1.0, max(0.70, s * (1.2 + color_coverage)))
+                boosted_v = min(1.0, max(0.50, v * 1.2))
+                return h, boosted_s, boosted_v
 
-        if has_vivid_color and w_sum > 0.001:
-            weighted_r = float(np.sum(r_flat * weights) / w_sum)
-            weighted_g = float(np.sum(g_flat * weights) / w_sum)
-            weighted_b = float(np.sum(b_flat * weights) / w_sum)
-            h, s, v = colorsys.rgb_to_hsv(weighted_r, weighted_g, weighted_b)
-            
-            # Super-charge saturation to 100% (minimum 0.90) so colors are vivid and never whitish
-            s = min(1.0, max(0.90, s * 1.8))
-            v = min(1.0, max(0.60, v * 1.3))
-        else:
-            # White documents / monochrome desktop -> output warm amber tone, NOT white
+        # Otherwise (Dark Mode, code editors, GitHub dashboard, text documents):
+        # Calculate screen average brightness
+        avg_brightness = float(np.mean(max_c))
+
+        if avg_brightness < 0.25:
+            # Dark Mode UI (mostly black/gray with few tiny icons):
+            # Emit a very subtle, soft, cozy warm dim amber glow matching the dark room
             h = 0.08  # Warm Amber
-            s = 0.85  # Deep saturated warm tone
-            v = max(0.40, min(0.70, float(np.mean(max_c))))
+            s = 0.65  # Soft warmth
+            v = max(0.20, min(0.40, avg_brightness * 1.5 + 0.15))
+        else:
+            # Bright / White document (Word, PDF, white webpage):
+            # Soft warm golden glow (prevents harsh cold white)
+            h = 0.09  # Warm Golden
+            s = 0.50  # Balanced warmth
+            v = max(0.35, min(0.65, avg_brightness))
 
         return h, s, v
 
@@ -174,13 +190,13 @@ class AmbientSyncEngine:
 
                 # 3. Apply brightness scale (30% default)
                 scale = self.brightness / 100.0
-                final_v = max(0.12, self.current_v * scale)
+                final_v = max(0.10, self.current_v * scale)
 
                 # 4. Convert HSV to RGB
                 r_f, g_f, b_f = colorsys.hsv_to_rgb(self.current_h, self.current_s, final_v)
-                out_r = max(15, min(255, int(round(r_f * 255))))
-                out_g = max(15, min(255, int(round(g_f * 255))))
-                out_b = max(15, min(255, int(round(b_f * 255))))
+                out_r = max(10, min(255, int(round(r_f * 255))))
+                out_g = max(10, min(255, int(round(g_f * 255))))
+                out_b = max(10, min(255, int(round(b_f * 255))))
 
                 # 5. Send BLE packet when color shifts
                 last_r, last_g, last_b = self._last_sent_rgb
