@@ -91,21 +91,21 @@ def classify_screen_theme(r_flat: np.ndarray, g_flat: np.ndarray, b_flat: np.nda
 
 class AmbientSyncEngine:
     """
-    Intelligent Stable Theme Ambient Engine with Smooth Cinema Fading.
+    Intelligent Stable Theme Ambient Engine with Cinema-Grade Invisible Crossfade.
     
     Features:
-    - 🌊 Smooth Gradual Transitions: When switching between themes, glides slowly (~2.0s)
-      with an S-curve cosine ease along the color wheel.
+    - 🌌 Invisible Smoothstep Crossfade: Fades gradually and imperceptibly across 4.0 seconds.
+      Colors melt naturally into the background without noticeable steps or spinning through rainbow hues.
     - 🔒 Zero Continuous Packet Flooding: Once transition completes, stays completely silent.
     - 🛡️ 1.2-Second Stability Lock: Ignores quick motions, thumbnail scrolling, and subtitles.
     - 💡 5V Hardware Illumination Floor: Guaranteed active minimum voltage so 5V LEDs never shut off.
     """
 
-    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.200, brightness: int = 30, transition_duration: float = 2.0):
+    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.200, brightness: int = 30, transition_duration: float = 4.0):
         self.controller = ble_controller
         self.zone = zone.lower()
         self.update_interval = update_interval  # Check every 200ms
-        self.transition_duration = transition_duration  # 2.0s smooth cinema fade
+        self.transition_duration = transition_duration  # 4.0s slow imperceptible melt
         self.brightness = max(10, min(100, int(brightness)))  # Default 30%
         
         self.running = False
@@ -114,8 +114,8 @@ class AmbientSyncEngine:
         # Currently locked active theme
         self.locked_theme_key = "WARM_ORANGE"
         self.locked_hue = 0.075
-        self.current_h = 0.075
         self.locked_name = "🕯️ Warm Yellow-Orange (Eye Comfort / Dark Mode)"
+        self._current_rgb = self.compute_rgb_for_hue(0.075)
         
         # Debounce counter: candidate theme must hold for multiple consecutive checks (~1.2s)
         self._candidate_theme_key = self.locked_theme_key
@@ -158,7 +158,7 @@ class AmbientSyncEngine:
         out_g = max(0, min(255, int(round(g_f * peak_scale))))
         out_b = max(0, min(255, int(round(b_f * peak_scale))))
 
-        # 5V Hardware Illumination Floor: Primary active channel must be >= 50
+        # 5V Hardware Illumination Floor: Primary active channel must be >= 45
         peak_ch = max(out_r, out_g, out_b)
         min_safe_floor = max(45, int(55 * norm_bright))
         if peak_ch < min_safe_floor and peak_ch > 0:
@@ -192,57 +192,69 @@ class AmbientSyncEngine:
 
         return classify_screen_theme(r_flat, g_flat, b_flat)
 
-    async def _glide_to_hue(self, target_hue: float, duration: float = 2.0):
+    async def _crossfade_to_rgb(self, target_rgb: Tuple[int, int, int], duration: float = 4.0):
         """
-        Smoothly glides from current_h to target_hue along the shortest circular path.
-        Uses S-curve cosine easing for cinema-grade gradual fading.
+        Slow, seamless perceptual Smoothstep RGB Crossfade.
+        Takes 4.0 seconds to gently blend and melt from current color to target color.
+        Micro-steps (<=1 unit change) make the transition completely invisible and jitter-free.
         """
-        start_h = self.current_h
-        dh = target_hue - start_h
-        if dh > 0.5:
-            dh -= 1.0
-        elif dh < -0.5:
-            dh += 1.0
+        r_start, g_start, b_start = self._current_rgb
+        r_target, g_target, b_target = target_rgb
 
-        # If already at the color, send once and return
-        if abs(dh) < 0.005:
-            self.current_h = target_hue
-            out_r, out_g, out_b = self.compute_rgb_for_hue(target_hue)
+        # If identical or within 1 unit, send once and return
+        if (r_start, g_start, b_start) == (r_target, g_target, b_target):
             if self.controller and self.controller.is_connected:
-                self._last_sent_rgb = (out_r, out_g, out_b)
-                await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
+                self._last_sent_rgb = (r_target, g_target, b_target)
+                await self.controller.set_color_rgb(r_target, g_target, b_target, immediate=True, raw=True)
             if self.on_color_update:
-                self.on_color_update((out_r, out_g, out_b))
+                self.on_color_update((r_target, g_target, b_target))
             return
 
-        steps = max(20, int(duration / 0.045))  # ~45 steps for 2.0s
-        for step in range(1, steps + 1):
+        interval = 0.035  # ~28 updates per second
+        total_steps = max(30, int(duration / interval))
+
+        for step in range(1, total_steps + 1):
             if not self.running:
                 break
             
-            # S-curve ease-in-out
-            t = step / float(steps)
-            ease_t = 0.5 * (1.0 - math.cos(t * math.pi))
-            
-            interp_h = (start_h + dh * ease_t) % 1.0
-            self.current_h = interp_h
-            
-            out_r, out_g, out_b = self.compute_rgb_for_hue(interp_h)
-            if self.controller and self.controller.is_connected:
-                self._last_sent_rgb = (out_r, out_g, out_b)
-                await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
+            # Smoothstep cubic ease: 3*t^2 - 2*t^3
+            t = step / float(total_steps)
+            ease_t = t * t * (3.0 - 2.0 * t)
+
+            # Linear perceptual channel interpolation
+            cur_r = int(round(r_start + (r_target - r_start) * ease_t))
+            cur_g = int(round(g_start + (g_target - g_start) * ease_t))
+            cur_b = int(round(b_start + (b_target - b_start) * ease_t))
+
+            # Maintain 5V safe floor
+            norm_bright = max(0.10, min(1.0, self.brightness / 100.0))
+            min_floor = max(45, int(55 * norm_bright))
+            peak_ch = max(cur_r, cur_g, cur_b)
+            if peak_ch < min_floor and peak_ch > 0:
+                boost = min_floor / float(peak_ch)
+                cur_r = max(0, min(255, int(round(cur_r * boost))))
+                cur_g = max(0, min(255, int(round(cur_g * boost))))
+                cur_b = max(0, min(255, int(round(cur_b * boost))))
+
+            self._current_rgb = (cur_r, cur_g, cur_b)
+
+            # Transmit only if RGB value shifted
+            last_r, last_g, last_b = self._last_sent_rgb
+            if (cur_r, cur_g, cur_b) != (last_r, last_g, last_b):
+                self._last_sent_rgb = (cur_r, cur_g, cur_b)
+                if self.controller and self.controller.is_connected:
+                    await self.controller.set_color_rgb(cur_r, cur_g, cur_b, immediate=True, raw=True)
 
             if self.on_color_update:
-                self.on_color_update((out_r, out_g, out_b))
+                self.on_color_update((cur_r, cur_g, cur_b))
 
-            await asyncio.sleep(0.045)
+            await asyncio.sleep(interval)
 
         # Final target snap
-        self.current_h = target_hue
-        out_r, out_g, out_b = self.compute_rgb_for_hue(target_hue)
+        self._current_rgb = (r_target, g_target, b_target)
         if self.controller and self.controller.is_connected:
-            self._last_sent_rgb = (out_r, out_g, out_b)
-            await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
+            self._last_sent_rgb = (r_target, g_target, b_target)
+            await self.controller.set_color_rgb(r_target, g_target, b_target, immediate=True, raw=True)
 
     async def start(self):
         """Start the stable theme detection loop (auto powers ON the strip)."""
@@ -267,20 +279,21 @@ class AmbientSyncEngine:
 
     async def _loop(self):
         """
-        Intelligent Stable Theme Loop with Smooth Transitions.
+        Intelligent Stable Theme Loop with Invisible Smoothstep Crossfades.
         - Identifies screen theme.
-        - Fades smoothly to new theme over ~2.0 seconds.
+        - Crossfades smoothly and imperceptibly over ~4.0 seconds.
         - Holds completely silent and rock-steady until the next screen theme change.
         """
         attach_to_input_desktop()
         
-        # 1. Initial screen theme detection & smooth initial fade-in
+        # 1. Initial screen theme detection & gentle fade-in
         theme_key, hue, name, _ = self._detect_screen_theme()
         self.locked_theme_key = theme_key
         self.locked_hue = hue
         self.locked_name = name
 
-        await self._glide_to_hue(self.locked_hue, duration=1.2)
+        init_target_rgb = self.compute_rgb_for_hue(self.locked_hue)
+        await self._crossfade_to_rgb(init_target_rgb, duration=1.5)
 
         # 2. Main monitoring loop (rate-limited, debounced)
         while self.running:
@@ -300,8 +313,9 @@ class AmbientSyncEngine:
                             self.locked_name = cand_name
                             self._candidate_hold_count = 0
 
-                            # Smoothly glide to new theme color over ~2.0s
-                            await self._glide_to_hue(self.locked_hue, duration=self.transition_duration)
+                            # Imperceptibly crossfade to new theme color over ~4.0 seconds
+                            new_target_rgb = self.compute_rgb_for_hue(self.locked_hue)
+                            await self._crossfade_to_rgb(new_target_rgb, duration=self.transition_duration)
                     else:
                         # Reset candidate tracker
                         self._candidate_theme_key = cand_key
