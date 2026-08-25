@@ -1,7 +1,7 @@
 import asyncio
+import collections
 import colorsys
 import ctypes
-from ctypes import wintypes
 import logging
 import time
 from typing import Callable, Optional, Tuple
@@ -25,32 +25,53 @@ def attach_to_input_desktop():
     except Exception as e:
         logger.debug(f"Input desktop attach error: {e}")
 
+# ---------------------------------------------------------------------------
+# Cinematic Color Tone Presets & Mood Sectors
+# ---------------------------------------------------------------------------
+CINEMATIC_MOODS = [
+    ("WARM_GOLD", 0.080, "Golden Sunset / Candlelight Warmth"),
+    ("GOTHAM_BLUE", 0.580, "Gotham Night / Cinematic Slate Blue"),
+    ("CYBER_CYAN", 0.500, "Sci-Fi Electric Cyan / Neon Tech"),
+    ("NEON_MAGENTA", 0.820, "Cyberpunk Purple / Neon Noir"),
+    ("MATRIX_GREEN", 0.330, "Emerald Matrix / Deep Foliage"),
+    ("CRIMSON_RED", 0.005, "Dramatic Crimson / Red Alert"),
+    ("COZY_AMBER", 0.070, "Warm Yellow-Orange Cozy Ambient"),
+]
+
 class AmbientSyncEngine:
     """
-    High-performance, ultra-smooth Ambient Screen Color Sync Engine.
+    Cinematic Base-Theme Ambient Lighting Engine.
+    
     Features:
-    - Coverage-Aware Color Extraction: Only shifts to vibrant colors when there is meaningful colored content on screen (>4% coverage)
-    - Dark-Mode & Text Shield: Dark mode and text pages emit a gentle, dim warm ambient glow instead of latching onto tiny 5px blue buttons
-    - Pure HSV-Space Transitions: Smooth circular Hue transitions with zero white/gray bleed
-    - User Brightness Scaling: Configurable brightness scale (default 30%)
+    - Cinematic Mood-Lock: Identifies the base theme/color tone of a movie, game, or video
+      and firmly locks to that color palette without rapid or distracting color fluctuations.
+    - Scene Change Persistence: Only transitions when a scene fundamentally and consistently shifts.
+    - Stately Cinema-Grade Transitions: Glides smoothly across 3-5 seconds with zero jitter or flickering.
+    - 5V Hardware Illumination Floor: Guaranteed active minimum voltage so 5V USB LEDs never turn off.
+    - 100% Saturated Pure Gamut: 0% white/gray wash, rendering pure vivid atmospheric color.
     """
 
-    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.035, transition_speed: float = 0.045, brightness: int = 30):
+    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.040, transition_speed: float = 0.020, brightness: int = 30):
         self.controller = ble_controller
         self.zone = zone.lower()
         self.update_interval = update_interval
-        self.transition_speed = transition_speed  # 0.045 = ~1.8s silky smooth cinema transition
-        self.brightness = max(5, min(100, int(brightness)))  # Default 30%
+        self.transition_speed = transition_speed  # 0.020 = ~3.5s stately cinema transition
+        self.brightness = max(10, min(100, int(brightness)))  # Default 30%
         
         self.running = False
         self._sync_task: Optional[asyncio.Task] = None
 
-        # Start at a rich, warm amber glow with 100% saturation
-        self.current_h = 0.075  # Warm Yellow-Orange hue
-        self.current_s = 1.0    # 100% Max Saturation (Pure color)
-        self.current_v = 0.35   # Baseline value
-        self._target_h = 0.075
-        self._target_v = 0.35
+        # Active state (starts at warm amber mood)
+        self.current_h = 0.075  # Warm Yellow-Orange
+        self.current_s = 1.0    # 100% Saturation
+        self.current_v = 0.70   # Strong full baseline
+        
+        # Mood-Lock tracking buffer (rolling window of recent screen color samples)
+        self._recent_hues = collections.deque(maxlen=60)  # ~2.4 seconds of history
+        self._locked_mood_h = 0.075
+        self._locked_mood_name = "COZY_AMBER"
+        self._mood_lock_counter = 0
+
         self._last_sent_rgb = (-1, -1, -1)
         self.on_color_update: Optional[Callable[[Tuple[int, int, int]], None]] = None
 
@@ -70,13 +91,11 @@ class AmbientSyncEngine:
             return img.crop((int(w * 0.65), 0, w, h))
         return img
 
-    def _sample_screen(self) -> Tuple[float, float, float]:
+    def _extract_instant_color(self) -> Tuple[float, float, float, float]:
         """
-        Capture interactive screen, crop zone, downsample, and extract dominant vibrant color in (H, S, V).
-        Uses coverage-aware filtering so small buttons or icons don't falsely turn a dark screen into cyan.
+        Samples screen pixels and returns (hue, sat, val, chromatic_weight).
         """
         attach_to_input_desktop()
-        
         try:
             full_img = ImageGrab.grab()
         except Exception:
@@ -84,33 +103,31 @@ class AmbientSyncEngine:
                 attach_to_input_desktop()
                 full_img = ImageGrab.grab()
             except Exception as e:
-                logger.debug(f"Screen capture fallback (screen locked/minimized): {e}")
-                return self.current_h, self.current_s, self.current_v
+                logger.debug(f"Screen capture fallback: {e}")
+                return self.current_h, self.current_s, self.current_v, 0.0
 
         region = self._crop_region(full_img)
         small = region.resize((32, 32), Image.Resampling.BILINEAR)
         arr = np.array(small, dtype=np.float32)
 
-        # Convert to float 0.0 - 1.0 (RGB)
         r_flat = arr[:, :, 0].flatten() / 255.0
         g_flat = arr[:, :, 1].flatten() / 255.0
         b_flat = arr[:, :, 2].flatten() / 255.0
 
-        # Calculate saturation and value for each pixel
         max_c = np.maximum(np.maximum(r_flat, g_flat), b_flat)
         min_c = np.minimum(np.minimum(r_flat, g_flat), b_flat)
         delta = max_c - min_c
         sat = np.where(max_c > 0.02, delta / (max_c + 1e-6), 0.0)
 
-        # Measure real colored area on screen (at least ~3% of screen to be chromatic)
-        vivid_mask = (sat > 0.18) & (max_c > 0.14)
+        # Detect chromatic pixels
+        vivid_mask = (sat > 0.16) & (max_c > 0.12)
         vivid_count = int(np.sum(vivid_mask))
         total_pixels = len(sat)  # 1024
         color_coverage = vivid_count / float(total_pixels)
+        avg_brightness = float(np.mean(max_c))
 
-        # If at least 3% of the screen has real vivid color (e.g. video, game, banner, graphic)
-        if color_coverage >= 0.03:
-            # Weighted average favoring vivid pixels
+        if color_coverage >= 0.025:
+            # Video scene with chromatic lighting
             weights = (sat ** 1.8) * (max_c ** 0.8)
             w_sum = float(np.sum(weights))
             if w_sum > 0.001:
@@ -118,36 +135,61 @@ class AmbientSyncEngine:
                 weighted_g = float(np.sum(g_flat * weights) / w_sum)
                 weighted_b = float(np.sum(b_flat * weights) / w_sum)
                 h, s, v = colorsys.rgb_to_hsv(weighted_r, weighted_g, weighted_b)
-                
-                # Maximum 100% saturation for punchy, vivid pure color
-                boosted_s = 1.0
-                boosted_v = min(1.0, max(0.60, v * 1.4))
-                return h, boosted_s, boosted_v
+                return h, 1.0, 0.90, color_coverage
 
-        # Otherwise (Dark Mode, code editors, GitHub dashboard, text documents):
-        # Calculate screen average brightness
-        avg_brightness = float(np.mean(max_c))
+        # Dark mode / static reading -> default to cozy warm amber
+        return 0.075, 1.0, max(0.60, avg_brightness), 0.0
 
-        if avg_brightness < 0.28:
-            # Dark Mode UI (mostly black/gray with small icons):
-            # 100% pure saturated Yellow-Orange Warm Light (~27° on color wheel) — rich, cozy & zero white
-            h = 0.075  # Warm Yellow-Orange
-            s = 1.0    # 100% Max Saturation (Pure, rich color)
-            v = max(0.25, min(0.50, avg_brightness * 1.2 + 0.25))
-        else:
-            # Bright / White document (Word, PDF, white webpage):
-            # 100% pure saturated Golden Warm Light to cut eye strain
-            h = 0.085  # Golden Warm Light
-            s = 1.0    # 100% Max Saturation
-            v = max(0.35, min(0.65, avg_brightness))
-
+    def _sample_screen(self) -> Tuple[float, float, float]:
+        """Capture screen and extract instant color (H, S, V)."""
+        h, s, v, _ = self._extract_instant_color()
         return h, s, v
+
+    def _update_cinematic_mood_lock(self, sample_h: float, sample_coverage: float) -> float:
+        """
+        Cinematic Mood-Lock algorithm:
+        Accumulates temporal color data and locks to the dominant scene theme.
+        Rejects fast flickers, camera cuts, or brief micro-flashes.
+        """
+        if sample_coverage > 0.02:
+            self._recent_hues.append(sample_h)
+        else:
+            # Dark / neutral page pushes towards warm amber mood
+            self._recent_hues.append(0.075)
+
+        if len(self._recent_hues) < 15:
+            return self._locked_mood_h
+
+        # Compute angular mean on circle (prevents 0/1 wrap-around error)
+        hues_arr = np.array(self._recent_hues)
+        angles = hues_arr * 2.0 * np.pi
+        mean_x = np.mean(np.cos(angles))
+        mean_y = np.mean(np.sin(angles))
+        dominant_h = (np.arctan2(mean_y, mean_x) / (2.0 * np.pi)) % 1.0
+
+        # Angular distance between dominant buffer hue and currently locked hue
+        dh = dominant_h - self._locked_mood_h
+        if dh > 0.5:
+            dh -= 1.0
+        elif dh < -0.5:
+            dh += 1.0
+        
+        # If scene has consistently shifted to a new color mood for a sustained period:
+        if abs(dh) > 0.08:
+            self._mood_lock_counter += 1
+            # Require at least 25 consecutive consistent samples (~1 second) to switch scene theme
+            if self._mood_lock_counter >= 25:
+                self._locked_mood_h = dominant_h
+                self._mood_lock_counter = 0
+        else:
+            self._mood_lock_counter = max(0, self._mood_lock_counter - 1)
+
+        return self._locked_mood_h
 
     async def start(self):
         """Start the ambient screen capture sync loop (auto powers ON the strip)."""
         if self.running:
             return
-        # Ensure the strip is powered on before sending colors
         if self.controller and self.controller.is_connected:
             try:
                 await self.controller.set_power(True, immediate=True)
@@ -155,7 +197,7 @@ class AmbientSyncEngine:
                 logger.debug(f"Auto power-on warning: {e}")
         self.running = True
         self._sync_task = asyncio.create_task(self._loop())
-        logger.info(f"Ambient Screen Sync started [Zone: {self.zone}, Brightness: {self.brightness}%]")
+        logger.info(f"Cinematic Ambient Sync started [Zone: {self.zone}, Brightness: {self.brightness}%]")
 
     async def stop(self):
         """Stop ambient screen capture."""
@@ -167,55 +209,59 @@ class AmbientSyncEngine:
 
     async def _loop(self):
         """
-        Continuous smooth color capture and transition loop.
-        Interpolates in pure HSV space with anti-jitter noise filtering so transitions
-        glide like a cinematic fluid without any jitter, hunting, or stepping.
+        Cinema-Grade Ambient Sync Loop.
+        Locked to the video base theme color tone. Smoothly glides across scene changes
+        and maintains a solid hardware illumination floor so 5V USB LEDs NEVER shut off.
         """
         attach_to_input_desktop()
         
         while self.running:
             start_time = time.perf_counter()
             try:
-                # 1. Sample target screen color in HSV
-                raw_h, raw_s, raw_v = self._sample_screen()
+                # 1. Sample current screen color
+                raw_h, raw_s, raw_v, raw_cov = self._extract_instant_color()
 
-                # Anti-jitter deadband filter: ignore microscopic noise oscillations
-                dh_raw = abs(raw_h - self._target_h)
-                if dh_raw > 0.5:
-                    dh_raw = 1.0 - dh_raw
-                if dh_raw > 0.012:
-                    self._target_h = raw_h
+                # 2. Update Cinematic Scene Mood Lock
+                target_h = self._update_cinematic_mood_lock(raw_h, raw_cov)
+                target_s = 1.0  # Always pure 100% saturated color
+                target_v = 0.90
 
-                if abs(raw_v - self._target_v) > 0.015:
-                    self._target_v = raw_v
-
-                target_h = self._target_h
-                target_s = raw_s
-                target_v = self._target_v
-
-                # 2. Smooth shortest-path Hue interpolation along color circle
+                # 3. Smooth, majestic cinema-grade Hue glide along color wheel (zero jumping)
                 dh = target_h - self.current_h
                 if dh > 0.5:
                     dh -= 1.0
                 elif dh < -0.5:
                     dh += 1.0
+
                 self.current_h = (self.current_h + dh * self.transition_speed) % 1.0
-                self.current_s += (target_s - self.current_s) * self.transition_speed
+                self.current_s = 1.0
                 self.current_v += (target_v - self.current_v) * self.transition_speed
 
-                # 3. Apply brightness scale for 5V USB LED strip
-                norm_bright = max(0.05, min(1.0, self.brightness / 100.0))
-                scale = norm_bright ** 0.75  # Smooth perceptual curve (5% dim -> 100% max bright)
-                final_v = max(0.08, self.current_v * scale)
+                # 4. Apply User Brightness Scaling (e.g. 30%, 50%, 100%)
+                norm_bright = max(0.10, min(1.0, self.brightness / 100.0))
+                
+                # Convert 100% saturated HSV to base RGB (0.0 to 1.0)
+                r_f, g_f, b_f = colorsys.hsv_to_rgb(self.current_h, 1.0, 1.0)
 
-                # 4. Convert HSV to RGB with 100% saturation
-                r_f, g_f, b_f = colorsys.hsv_to_rgb(self.current_h, self.current_s, final_v)
+                # Scale with brightness percentage
+                # Base scale: maps 30% -> output peak ~85/255; 100% -> output peak 255/255
+                peak_scale = 255.0 * (norm_bright ** 0.65)
+                
+                # 5. Guaranteed 5V Hardware Illumination Floor (prevents LED diode dropout)
+                # Ensure the primary channel is ALWAYS >= 50 on 5V strips so it never shuts off
+                out_r = max(0, min(255, int(round(r_f * peak_scale))))
+                out_g = max(0, min(255, int(round(g_f * peak_scale))))
+                out_b = max(0, min(255, int(round(b_f * peak_scale))))
 
-                out_r = max(0, min(255, int(round(r_f * 255))))
-                out_g = max(0, min(255, int(round(g_f * 255))))
-                out_b = max(0, min(255, int(round(b_f * 255))))
+                peak_ch = max(out_r, out_g, out_b)
+                min_safe_floor = max(45, int(55 * norm_bright))
+                if peak_ch < min_safe_floor and peak_ch > 0:
+                    boost = min_safe_floor / float(peak_ch)
+                    out_r = max(0, min(255, int(round(out_r * boost))))
+                    out_g = max(0, min(255, int(round(out_g * boost))))
+                    out_b = max(0, min(255, int(round(out_b * boost))))
 
-                # 5. Send BLE packet when color shifts (even 1-unit micro step)
+                # 6. Send BLE packet when color shifts
                 last_r, last_g, last_b = self._last_sent_rgb
                 delta = abs(out_r - last_r) + abs(out_g - last_g) + abs(out_b - last_b)
 
@@ -232,5 +278,5 @@ class AmbientSyncEngine:
                 logger.error(f"Ambient loop error: {e}")
 
             elapsed = time.perf_counter() - start_time
-            sleep_time = max(0.008, self.update_interval - elapsed)
+            sleep_time = max(0.010, self.update_interval - elapsed)
             await asyncio.sleep(sleep_time)
