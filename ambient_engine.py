@@ -2,6 +2,7 @@ import asyncio
 import colorsys
 import ctypes
 import logging
+import math
 import time
 from typing import Callable, Optional, Tuple
 import numpy as np
@@ -27,7 +28,6 @@ def attach_to_input_desktop():
 # ---------------------------------------------------------------------------
 # Distinct Stable Color Themes (Clean, 100% Saturated Palettes)
 # ---------------------------------------------------------------------------
-# (Theme Name, Base Hue, Base RGB preview)
 PALETTE_THEMES = [
     ("WARM_ORANGE", 0.075, "🕯️ Warm Yellow-Orange (Eye Comfort / Dark Mode)", (255, 128, 0)),
     ("GOTHAM_BLUE", 0.580, "🦇 Deep Slate / Electric Blue", (0, 130, 255)),
@@ -50,7 +50,7 @@ def classify_screen_theme(r_flat: np.ndarray, g_flat: np.ndarray, b_flat: np.nda
 
     avg_bright = float(np.mean(max_c))
     
-    # Check if there is significant colored content (>8% of screen)
+    # Check if there is significant colored content (>6% of screen)
     vivid_mask = (sat > 0.20) & (max_c > 0.15)
     vivid_pixels = int(np.sum(vivid_mask))
     total_pixels = len(sat)  # 1024
@@ -75,13 +75,6 @@ def classify_screen_theme(r_flat: np.ndarray, g_flat: np.ndarray, b_flat: np.nda
     raw_h, raw_s, raw_v = colorsys.rgb_to_hsv(w_r, w_g, w_b)
 
     # Map raw continuous hue to the nearest solid discrete theme:
-    # 0.00 - 0.04 -> Red
-    # 0.04 - 0.14 -> Warm Orange / Amber
-    # 0.15 - 0.42 -> Green
-    # 0.43 - 0.53 -> Cyan
-    # 0.54 - 0.70 -> Blue
-    # 0.71 - 0.95 -> Purple / Magenta
-    # 0.95 - 1.00 -> Red
     if raw_h < 0.035 or raw_h >= 0.95:
         return "CRIMSON_RED", 0.005, "🔴 Deep Crimson Red", (255, 0, 30)
     elif 0.035 <= raw_h < 0.14:
@@ -98,20 +91,21 @@ def classify_screen_theme(r_flat: np.ndarray, g_flat: np.ndarray, b_flat: np.nda
 
 class AmbientSyncEngine:
     """
-    Intelligent Stable Theme Ambient Engine.
+    Intelligent Stable Theme Ambient Engine with Smooth Cinema Fading.
     
-    Rules & Stability Protections:
-    1. Zero Continuous BLE Flooding: Only transmits when a major screen theme genuinely shifts.
-    2. Debounced Scene Detection: Requires a new theme to persist steadily for at least 1.5 seconds
-       before switching, ignoring scrolling, thumbnail browsing, and video motion.
-    3. Solid Discrete Theme Mapping: Snaps colors to pure, rich 100% saturated palettes.
-    4. 5V Hardware Illumination Floor: Guaranteed active minimum voltage so 5V USB LEDs never turn off.
+    Features:
+    - 🌊 Smooth Gradual Transitions: When switching between themes, glides slowly (~2.0s)
+      with an S-curve cosine ease along the color wheel.
+    - 🔒 Zero Continuous Packet Flooding: Once transition completes, stays completely silent.
+    - 🛡️ 1.2-Second Stability Lock: Ignores quick motions, thumbnail scrolling, and subtitles.
+    - 💡 5V Hardware Illumination Floor: Guaranteed active minimum voltage so 5V LEDs never shut off.
     """
 
-    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.200, brightness: int = 30):
+    def __init__(self, ble_controller, zone: str = "full", update_interval: float = 0.200, brightness: int = 30, transition_duration: float = 2.0):
         self.controller = ble_controller
         self.zone = zone.lower()
         self.update_interval = update_interval  # Check every 200ms
+        self.transition_duration = transition_duration  # 2.0s smooth cinema fade
         self.brightness = max(10, min(100, int(brightness)))  # Default 30%
         
         self.running = False
@@ -120,9 +114,10 @@ class AmbientSyncEngine:
         # Currently locked active theme
         self.locked_theme_key = "WARM_ORANGE"
         self.locked_hue = 0.075
+        self.current_h = 0.075
         self.locked_name = "🕯️ Warm Yellow-Orange (Eye Comfort / Dark Mode)"
         
-        # Debounce counter: candidate theme must hold for multiple consecutive checks (~1.5s)
+        # Debounce counter: candidate theme must hold for multiple consecutive checks (~1.2s)
         self._candidate_theme_key = self.locked_theme_key
         self._candidate_hold_count = 0
         self._required_holds = 6  # 6 * 200ms = 1.2s stability lock
@@ -155,7 +150,7 @@ class AmbientSyncEngine:
         Compute the 100% saturated, brightness-scaled RGB color for 5V LED strips.
         """
         norm_bright = max(0.10, min(1.0, self.brightness / 100.0))
-        r_f, g_f, b_f = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+        r_f, g_f, b_f = colorsys.hsv_to_rgb(hue % 1.0, 1.0, 1.0)
 
         # Scale output with user brightness
         peak_scale = 255.0 * (norm_bright ** 0.65)
@@ -197,6 +192,58 @@ class AmbientSyncEngine:
 
         return classify_screen_theme(r_flat, g_flat, b_flat)
 
+    async def _glide_to_hue(self, target_hue: float, duration: float = 2.0):
+        """
+        Smoothly glides from current_h to target_hue along the shortest circular path.
+        Uses S-curve cosine easing for cinema-grade gradual fading.
+        """
+        start_h = self.current_h
+        dh = target_hue - start_h
+        if dh > 0.5:
+            dh -= 1.0
+        elif dh < -0.5:
+            dh += 1.0
+
+        # If already at the color, send once and return
+        if abs(dh) < 0.005:
+            self.current_h = target_hue
+            out_r, out_g, out_b = self.compute_rgb_for_hue(target_hue)
+            if self.controller and self.controller.is_connected:
+                self._last_sent_rgb = (out_r, out_g, out_b)
+                await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
+            if self.on_color_update:
+                self.on_color_update((out_r, out_g, out_b))
+            return
+
+        steps = max(20, int(duration / 0.045))  # ~45 steps for 2.0s
+        for step in range(1, steps + 1):
+            if not self.running:
+                break
+            
+            # S-curve ease-in-out
+            t = step / float(steps)
+            ease_t = 0.5 * (1.0 - math.cos(t * math.pi))
+            
+            interp_h = (start_h + dh * ease_t) % 1.0
+            self.current_h = interp_h
+            
+            out_r, out_g, out_b = self.compute_rgb_for_hue(interp_h)
+            if self.controller and self.controller.is_connected:
+                self._last_sent_rgb = (out_r, out_g, out_b)
+                await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
+
+            if self.on_color_update:
+                self.on_color_update((out_r, out_g, out_b))
+
+            await asyncio.sleep(0.045)
+
+        # Final target snap
+        self.current_h = target_hue
+        out_r, out_g, out_b = self.compute_rgb_for_hue(target_hue)
+        if self.controller and self.controller.is_connected:
+            self._last_sent_rgb = (out_r, out_g, out_b)
+            await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
+
     async def start(self):
         """Start the stable theme detection loop (auto powers ON the strip)."""
         if self.running:
@@ -220,26 +267,20 @@ class AmbientSyncEngine:
 
     async def _loop(self):
         """
-        Intelligent Stable Theme Loop.
-        Samples the screen periodically, but only switches when the screen theme
-        has changed and remained stable for >= 1.2 seconds.
-        Transmits ONLY when changing themes — zero continuous packet spamming.
+        Intelligent Stable Theme Loop with Smooth Transitions.
+        - Identifies screen theme.
+        - Fades smoothly to new theme over ~2.0 seconds.
+        - Holds completely silent and rock-steady until the next screen theme change.
         """
         attach_to_input_desktop()
         
-        # 1. Initial screen theme detection
+        # 1. Initial screen theme detection & smooth initial fade-in
         theme_key, hue, name, _ = self._detect_screen_theme()
         self.locked_theme_key = theme_key
         self.locked_hue = hue
         self.locked_name = name
 
-        out_r, out_g, out_b = self.compute_rgb_for_hue(self.locked_hue)
-        if self.controller and self.controller.is_connected:
-            self._last_sent_rgb = (out_r, out_g, out_b)
-            await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
-
-        if self.on_color_update:
-            self.on_color_update((out_r, out_g, out_b))
+        await self._glide_to_hue(self.locked_hue, duration=1.2)
 
         # 2. Main monitoring loop (rate-limited, debounced)
         while self.running:
@@ -259,14 +300,8 @@ class AmbientSyncEngine:
                             self.locked_name = cand_name
                             self._candidate_hold_count = 0
 
-                            # Send new theme color ONCE
-                            out_r, out_g, out_b = self.compute_rgb_for_hue(self.locked_hue)
-                            if self.controller and self.controller.is_connected:
-                                self._last_sent_rgb = (out_r, out_g, out_b)
-                                await self.controller.set_color_rgb(out_r, out_g, out_b, immediate=True, raw=True)
-
-                            if self.on_color_update:
-                                self.on_color_update((out_r, out_g, out_b))
+                            # Smoothly glide to new theme color over ~2.0s
+                            await self._glide_to_hue(self.locked_hue, duration=self.transition_duration)
                     else:
                         # Reset candidate tracker
                         self._candidate_theme_key = cand_key
