@@ -100,14 +100,14 @@ class AmbientSyncEngine:
         delta = max_c - min_c
         sat = np.where(max_c > 0.02, delta / (max_c + 1e-6), 0.0)
 
-        # Measure real colored area on screen (needs at least ~4% of screen to be chromatic)
-        vivid_mask = (sat > 0.20) & (max_c > 0.15)
+        # Measure real colored area on screen (needs at least ~6% of screen to be chromatic)
+        vivid_mask = (sat > 0.22) & (max_c > 0.18)
         vivid_count = int(np.sum(vivid_mask))
         total_pixels = len(sat)  # 1024
         color_coverage = vivid_count / float(total_pixels)
 
-        # If at least 4% of the screen has real vivid color (e.g. video, game, banner, graphic)
-        if color_coverage >= 0.04:
+        # If at least 6% of the screen has real vivid color (e.g. video, game, banner, graphic)
+        if color_coverage >= 0.06:
             # Weighted average favoring vivid pixels
             weights = (sat ** 1.8) * (max_c ** 0.6)
             w_sum = float(np.sum(weights))
@@ -118,8 +118,7 @@ class AmbientSyncEngine:
                 h, s, v = colorsys.rgb_to_hsv(weighted_r, weighted_g, weighted_b)
                 
                 # Proportional saturation based on how much of the screen is colored
-                # 4% coverage -> s ~ 0.70; 25%+ coverage -> s ~ 0.95
-                boosted_s = min(1.0, max(0.70, s * (1.2 + color_coverage)))
+                boosted_s = min(1.0, max(0.75, s * (1.2 + color_coverage)))
                 boosted_v = min(1.0, max(0.50, v * 1.2))
                 return h, boosted_s, boosted_v
 
@@ -127,17 +126,17 @@ class AmbientSyncEngine:
         # Calculate screen average brightness
         avg_brightness = float(np.mean(max_c))
 
-        if avg_brightness < 0.25:
-            # Dark Mode UI (mostly black/gray with few tiny icons):
-            # Emit a very subtle, soft, cozy warm dim amber glow matching the dark room
-            h = 0.08  # Warm Amber
-            s = 0.65  # Soft warmth
-            v = max(0.20, min(0.40, avg_brightness * 1.5 + 0.15))
+        if avg_brightness < 0.28:
+            # Dark Mode UI (mostly black/gray with small icons):
+            # Rich, cozy Warm Yellow-Orange Candlelight glow (~2400K) — soothing for eyes in dark rooms
+            h = 0.078  # Yellow-Orange Warm Light (~28° on color wheel)
+            s = 0.88   # Rich warm saturation (prevents washed-out tone)
+            v = max(0.25, min(0.50, avg_brightness * 1.2 + 0.25))
         else:
             # Bright / White document (Word, PDF, white webpage):
-            # Soft warm golden glow (prevents harsh cold white)
-            h = 0.09  # Warm Golden
-            s = 0.50  # Balanced warmth
+            # Soft warm golden glow (~3000K) to cut eye strain from bright screens
+            h = 0.088  # Golden Warm Light
+            s = 0.70   # Balanced warmth
             v = max(0.35, min(0.65, avg_brightness))
 
         return h, s, v
