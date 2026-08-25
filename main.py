@@ -275,11 +275,11 @@ async def run_ambient_sync_cli(controller: LEDStripController, zone: str = "full
         title="[bold green]Stable Ambient Light[/bold green]", border_style="cyan"
     ))
 
-    def on_theme_change(rgb):
+    def on_theme_change(theme_name: str, rgb: Tuple[int, int, int]):
         r, g, b = rgb
-        console.print(f"[bold green]✨ Screen Theme:[/bold green] {engine.locked_name}  RGB({r}, {g}, {b}) ", make_color_block(r, g, b, width=12))
+        console.print(f"[bold green]✨ Active Theme:[/bold green] {theme_name}  RGB({r}, {g}, {b}) ", make_color_block(r, g, b, width=12))
 
-    engine.on_color_update = on_theme_change
+    engine.on_theme_change = on_theme_change
     await engine.start()
 
     try:
